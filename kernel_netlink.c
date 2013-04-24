@@ -834,6 +834,30 @@ kernel_interface_channel(const char *ifname, int ifindex)
         return -1;
 }
 
+void
+flush_routing_cache() {
+    /* Loosely based on iproute2's iproute_flush_cache() function */
+    FILE *f;
+    int rc;
+
+    kdebugf("flush_routing_cache: flushing cache\n");
+    if ((f = fopen("/proc/sys/net/ipv4/route/flush", "w")) < 0) {
+        /* Failed to open the flush file for some reason */
+        kdebugf("flush_routing_cache: failed to open file\n");
+        return;
+    }
+    /* Should really check return values better here, but there's not
+     * much I can do about it if this fails anyway...
+     */
+    rc = fprintf(f, "-1");
+    if (rc < 0) {
+        kdebugf("flush_routing_cache: failed to write to file\n");
+    }
+    fclose(f);
+
+    /* TODO: add ip -6 flush cache equivalent.  This cannot be done via /proc. */
+}
+
 int
 kernel_route(int operation, const unsigned char *dest, unsigned short plen,
              const unsigned char *gate, int ifindex, unsigned int metric,
@@ -884,32 +908,19 @@ kernel_route(int operation, const unsigned char *dest, unsigned short plen,
         if(newmetric == metric && memcmp(newgate, gate, 16) == 0 &&
            newifindex == ifindex)
             return 0;
-        /* It would be better to add the new route before removing the
-           old one, to avoid losing packets.  However, this causes
-           problems with non-multipath kernels, which sometimes
-           silently fail the request, causing "stuck" routes.  Let's
-           stick with the naive approach, and hope that the window is
-           small enough to be negligible. */
-        kernel_route(ROUTE_FLUSH, dest, plen,
-                     gate, ifindex, metric,
-                     NULL, 0, 0);
-        rc = kernel_route(ROUTE_ADD, dest, plen,
-                          newgate, newifindex, newmetric,
-                          NULL, 0, 0);
-        if(rc < 0) {
-            if(errno == EEXIST)
-                rc = 1;
-            /* Should we try to re-install the flushed route on failure?
-               Error handling is hard. */
-        }
-        return rc;
     }
 
     kdebugf("kernel_route: %s %s/%d metric %d dev %d nexthop %s\n",
            operation == ROUTE_ADD ? "add" :
+           operation == ROUTE_MODIFY ? "modify" : 
            operation == ROUTE_FLUSH ? "flush" : "???",
            format_address(dest), plen, metric, ifindex,
            format_address(gate));
+    if (operation == ROUTE_MODIFY) {
+        kdebugf("kernel_route: modified to %s/%d metric %d dev %d nexthop %s\n",
+           format_address(dest), plen, newmetric, newifindex,
+           format_address(newgate));
+    }
 
     /* Unreachable default routes cause all sort of weird interactions;
        ignore them. */
@@ -920,6 +931,14 @@ kernel_route(int operation, const unsigned char *dest, unsigned short plen,
     if(operation == ROUTE_ADD) {
         buf.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL;
         buf.nh.nlmsg_type = RTM_NEWROUTE;
+    } else if(operation == ROUTE_MODIFY) {
+        /* Apparently should flush routing cache once this is done */
+        buf.nh.nlmsg_flags = NLM_F_REQUEST | NLM_F_CREATE |
+            NLM_F_REPLACE | NLM_F_EXCL;
+        buf.nh.nlmsg_type = RTM_NEWROUTE;
+        gate = newgate;
+        ifindex = newifindex;
+        metric = newmetric;
     } else {
         buf.nh.nlmsg_flags = NLM_F_REQUEST;
         buf.nh.nlmsg_type = RTM_DELROUTE;
@@ -978,7 +997,11 @@ kernel_route(int operation, const unsigned char *dest, unsigned short plen,
     }
     buf.nh.nlmsg_len = (char*)rta + rta->rta_len - buf.raw;
 
-    return netlink_talk(&buf.nh);
+    rc = netlink_talk(&buf.nh);
+    if (operation == ROUTE_MODIFY && rc == 0) {
+        flush_routing_cache();
+    }
+    return rc;
 }
 
 static int
