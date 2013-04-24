@@ -835,7 +835,7 @@ kernel_interface_channel(const char *ifname, int ifindex)
 }
 
 void
-flush_routing_cache() {
+flush_routing_cache_v4() {
     /* Loosely based on iproute2's iproute_flush_cache() function */
     FILE *f;
     int rc;
@@ -854,8 +854,34 @@ flush_routing_cache() {
         kdebugf("flush_routing_cache: failed to write to file\n");
     }
     fclose(f);
+}
 
-    /* TODO: add ip -6 flush cache equivalent.  This cannot be done via /proc. */
+void
+flush_routing_cache_v6() {
+    /* Loosely based on iproute2's iproute_flush_cache() function */
+    FILE *f;
+    int rc;
+
+    kdebugf("flush_routing_cache: flushing cache\n");
+    if ((f = fopen("/proc/sys/net/ipv6/route/flush", "w")) < 0) {
+        /* Failed to open the flush file for some reason */
+        kdebugf("flush_routing_cache: failed to open file\n");
+        return;
+    }
+    /* Should really check return values better here, but there's not
+     * much I can do about it if this fails anyway...
+     */
+    rc = fprintf(f, "-1");
+    if (rc < 0) {
+        kdebugf("flush_routing_cache: failed to write to file\n");
+    }
+    fclose(f);
+}
+
+void
+flush_routing_cache() {
+    flush_routing_cache_v4();
+    flush_routing_cache_v6();
 }
 
 int
