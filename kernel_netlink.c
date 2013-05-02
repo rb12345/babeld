@@ -871,7 +871,7 @@ flush_routing_cache_v6() {
     /* Should really check return values better here, but there's not
      * much I can do about it if this fails anyway...
      */
-    rc = fprintf(f, "-1");
+    rc = fprintf(f, "1");
     if (rc < 0) {
         kdebugf("flush_routing_cache: failed to write to file\n");
     }
